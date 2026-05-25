@@ -1080,7 +1080,7 @@ def generate_test_plan(order):
         'price_class': price_classes[0]  # Random (0 or 1)
     })
     
-    pickup_points = next(d for d in all_deliveries if d['en_name'] == 'pickup points')
+    pickup_points = next(d for d in all_deliveries if d['en_name'] == 'ppl parcel box')
     plan.append({
         'delivery': pickup_points,
         'payment': shuffled_payments[2],
@@ -1099,11 +1099,10 @@ def execute_single_order(order):
     
     try:
         # Initialize step counter
+        # Initialize step counter
         step_counter = StepCounter()
         print("---------------LOGS FOR NERDS---------------")
-        user_email = email
-        test_phone = phone
-
+        
         print(f'Chosen delivery: {order.selected_delivery['local_name']}')
         print(f'Chosen payment: {order.selected_payment['local_name']}')
 
@@ -1114,7 +1113,7 @@ def execute_single_order(order):
 
         while True:
             # Only choose the skus that are NOT in unavailable_items
-            my_sku, price_class = choose_sku(order)
+            my_sku = choose_sku(order)
             total_skus = order.get_all_skus()
             if my_sku != None:
                 print(f"Chosen SKU: {str(my_sku)}")
