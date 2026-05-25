@@ -66,6 +66,7 @@ class ParentContext:
         self.sku = {
             'selected': None,
             'price_class': None,
+            'price_class_type': 'flexible',  
             'unavailable': []   # Track unavailable SKUs
         }
 
@@ -291,30 +292,31 @@ class OrderContextCZ(ParentContext):
             display = f'{total_amount} {self.currency}'
         
         return display, total_amount
+
+def determine_price_class(payment_option):
+    price_class_list = payment_option['compatible_with']['price_class']
+    price_class = random.choice(price_class_list)
+    return price_class
     
 # Choose random sku, return a string and int price class
 def choose_sku(order):
-    price_classes_to_try = [0, 1]
-    random.shuffle(price_classes_to_try) 
-    
-    for price_class in price_classes_to_try:
-        sku_list = order.get_sku_list(price_class)
-        available_skus = [
-            str(sku) for sku in sku_list 
-            if str(sku) not in order.sku['unavailable']
-        ]
+    price_class = order.sku['price_class']
+    sku_list = order.get_sku_list(price_class)
+    available_skus = [
+        str(sku) for sku in sku_list 
+        if str(sku) not in order.sku['unavailable']
+    ]
         
-        if available_skus:
-            selected_sku = random.choice(available_skus)
-            order.sku['selected'] = selected_sku
-            order.sku['price_class'] = price_class
+    if available_skus:
+        selected_sku = random.choice(available_skus)
+        order.sku['selected'] = selected_sku
             
-            print(f"✓ Selected SKU: {selected_sku} (Price class: {price_class})")
-            return selected_sku, price_class
+        print(f"✓ Selected SKU: {selected_sku} (Price class: {price_class})")
+        return selected_sku
     
     # If we get here, both classes have no available SKUs
     print("✗ WARNING: No available SKUs in either price class!")
-    return None, None
+    return None
 
 def choose_address():
     # Define a list of shipping addresses
@@ -663,28 +665,21 @@ def select_ppl(order):
         take_screenshot("ppl_pickup_error")
         return False, 'ppl parcel box'
     
-def select_delivery_option(order):
+def click_delivery_option(order):
     try:
-        delivery_options = order.delivery_options
-        selected = random.choice(delivery_options)
-
-        # Update order context
-        order.selected_delivery = selected
+        selected = order.selected_delivery
 
         selected_name = selected['local_name']
         selected_id = selected['opt_id']
-        print(f"Selected: {selected_name}")
         
         # Get default delivery from order context
-        # For CZ default delivery is shop pickup - no need to click anything on map
         default = order.get_default_delivery()
         default_name = default['local_name'] if default else None
-        
+
         # Only interact with UI if not default
         if selected_name != default_name:
             if selected_name == 'ppl parcel box':
-                succcess, name = select_ppl(order)
-                return succcess, name
+                return select_ppl(order)
             else:
                 try:
                     # Find and click the delivery option label
@@ -706,57 +701,34 @@ def select_delivery_option(order):
                     time.sleep(1)
                 
                     print(f"✓ Option clicked: {selected_name}")
-                    return True, selected_name
+                    return True
                 
                 except Exception as e:
                     print(f"✗ Failed to click delivery option {selected_name}: {str(e)}")
-                    return False, selected_name
+                    return False
         else:
             print(f"Using default delivery option ({default_name}), no action needed")
-            return True, selected_name
+            return True
             
     except Exception as e:
         print(f"✗ Error in delivery selection process: {str(e)}")
         take_screenshot("delivery_option_error")
-        return False, "Error"
+        return False
 
-def select_payment_option(order):
+def click_payment_option(order):
     try:
-        print("Selecting payment option...")
-        available_options = order.get_available_payment_options()
-        
-        if not available_options:
-            print("✗ No payment options available for this delivery")
-            return False, None
-        
-        # Separate real (clickable) from virtual (no click needed)
-        real_options = [opt for opt in available_options if not opt.get('is_virtual', False)]
-        virtual_options = [opt for opt in available_options if opt.get('is_virtual', False)]
+        selected = order.selected_payment
 
-        # Choose appropriate option
-        if real_options:
-            selected = random.choice(real_options)
-            need_click = True
-            print(f"Selected real option: {selected['local_name']}")
-        elif virtual_options:
-            selected = virtual_options[0]
-            need_click = False
-            print(f"Selected virtual option: {selected['local_name']}")
-        else:
-            print("✗ No payment options available")
-            return False, None
-
-        # Update order context
-        order.selected_payment = selected
         selected_name = selected['local_name']
         selected_id = selected['opt_id']
 
-        # Get default payment
+        # Get default payment from order context
         default = order.get_default_payment()
         default_name = default['local_name'] if default else None
         
+        
         # Only interact with UI if real & not default
-        if need_click and selected_name != default_name:
+        if selected_name != default_name:
             try:
                 payment_label = WebDriverWait(driver, 10).until(
                     EC.element_to_be_clickable((By.CSS_SELECTOR, 
@@ -769,33 +741,29 @@ def select_payment_option(order):
                     payment_label
                 )
                 time.sleep(0.5)
+                
+                # CRITICAL: Re-find the element AFTER scrolling, before clicking
+                payment_label = WebDriverWait(driver, 5).until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, 
+                        f"label[for='{selected_id}']"))
+                )
                 payment_label.click()
                 time.sleep(1)
                 
                 print(f"✓ Successfully selected {selected_name}")
-                return True, selected_name
+                return True
                 
             except Exception as e:
-                # Fallback: try JavaScript click if normal click fails
-                try:
-                    print("Attempting JavaScript click fallback...")
-                    driver.execute_script(
-                        f"document.querySelector('label[for=\"{selected_id}\"]').click();"
-                    )
-                    time.sleep(1)
-                    print(f"✓ Successfully selected {selected_name} via JavaScript")
-                    return True, selected_name
-                except:
-                    print(f"✗ Failed to select payment option {selected_name}: {str(e)}")
-                    return False, selected_name
+                print(f"✗ Failed to click payment option {selected_name}: {str(e)}")
+                return False
         else:
-            print(f"Using {selected_name} (virtual or default), no action needed")
-            return True, selected_name
+            print(f"Using default payment option ({default_name}), no action needed")
+            return True
             
     except Exception as e:
-        print(f"✗ Error in payment selection process: {str(e)}")
+        print(f"✗ Error when clicking the payment option: {str(e)}")
         take_screenshot("payment_option_error")
-        return False, "Error"       
+        return False
                                                                                                     
 def fill_order_form(user_email, test_phone):
     try:
@@ -982,6 +950,7 @@ def fill_order_form(user_email, test_phone):
             print(f"✗ Error with comment field: {str(e)}")
             take_screenshot("comment_field_error")
         
+        take_screenshot("order_form_filled")
         print("✓ Order form filled successfully")
         return True
         
@@ -1071,10 +1040,62 @@ def get_order_number():
         print(f"✗ Error in final order submission: {str(e)}")
         take_screenshot("final_order_error")
         return False
+
+def generate_test_plan(order):
+    # 3 orders to cover 3 deliveries and 3 payments, test both price classes
     
-# Main execution
-def main_cz(email, phone):
+    # Get all options, not just third-party
+    all_deliveries = order.delivery_options
+    all_payments = order.payment_options
+    
+    plan = []
+    
+    # Strategy: pair each delivery with a unique payment, 3 orders total.
+    # Shop pickup is always free → either price class works.
+    # Courier and pickup points have 3000 Kč threshold → test one above, one below.
+    
+    # Order 1: Shop pickup (always free) + payment 1, any price class
+    # Order 2: Courier + payment 2, pick random price class and remove it from the list
+    # Order 3: Pickup points + payment 3, the remaining price class from Option 2
+    
+    # Shuffle payments for variety
+    shuffled_payments = random.sample(all_payments, len(all_payments))
+    
+    # Shop pickup — always free, any price class
+    shop_pickup = next(d for d in all_deliveries if d['en_name'] == 'shop pickup')
+    plan.append({
+        'delivery': shop_pickup,
+        'payment': shuffled_payments[0],
+        'price_class': random.choice([0, 1])
+    })
+    
+    # Courier and pickup points — randomly assign price classes, but different
+    price_classes = [0, 1]
+    random.shuffle(price_classes)
+    
+    courier = next(d for d in all_deliveries if d['en_name'] == 'courier')
+    plan.append({
+        'delivery': courier,
+        'payment': shuffled_payments[1],
+        'price_class': price_classes[0]  # Random (0 or 1)
+    })
+    
+    pickup_points = next(d for d in all_deliveries if d['en_name'] == 'pickup points')
+    plan.append({
+        'delivery': pickup_points,
+        'payment': shuffled_payments[2],
+        'price_class': price_classes[1]  # The other one
+    })
+    
+    print(f'Generated test plan with {len(plan)} combo(s)')
+    print(f'Courier price class: {price_classes[0]} ({"paid" if price_classes[0] == 0 else "free"})')
+    print(f'Pickup points price class: {price_classes[1]} ({"paid" if price_classes[1] == 0 else "free"})')
+    return plan
+
+def execute_single_order(order):
     global driver, wait
+    user_email = order.user_email
+    test_phone = order.user_phone
     
     try:
         # Initialize step counter
@@ -1083,7 +1104,8 @@ def main_cz(email, phone):
         user_email = email
         test_phone = phone
 
-        order = OrderContextCZ()
+        print(f'Chosen delivery: {order.selected_delivery['local_name']}')
+        print(f'Chosen payment: {order.selected_payment['local_name']}')
 
         print("\nLaunching browser...")
         driver = create_optimized_driver()
@@ -1120,7 +1142,6 @@ def main_cz(email, phone):
                 #return?
 
         order.sku['selected'] = my_sku
-        order.sku['price_class'] = price_class 
         
         step_counter.print_step("Getting offer ID")
         offer_id = get_offer_id(my_sku)
@@ -1151,24 +1172,16 @@ def main_cz(email, phone):
                                 fill_form_success = fill_order_form(user_email, test_phone)
                                 
                                 if fill_form_success:
-                                    step_counter.print_step("Selecting delivery option")
-                                    delivery_success, delivery = select_delivery_option(order)
+                                    step_counter.print_step("Clicking delivery option")
+                                    delivery_success = click_delivery_option(order)
                                     if delivery_success:
-                                        print(f"Delivery selected: {delivery}")
-                                        order.summary['delivery_option'] = delivery
-                                    else:
-                                        print("✗ Delivery selection failed, aborting")
-                                        #return
-                                        sys.exit(1)
-
-                                    step_counter.print_step("Selecting payment option")
-                                    payment_success, payment = select_payment_option(order)
+                                        order.summary['delivery_option'] = order.selected_delivery['local_name']
+                                    
+                                    step_counter.print_step("Clicking payment option")
+                                    payment_success = click_payment_option(order)
                                     if payment_success:
-                                        print(f"Payment selected: {payment}")
-                                        order.summary['payment_option'] = payment
-                                    else:
-                                        print("✗ Payment selection failed, but continuing with order process")
-                                  
+                                        order.summary['payment_option'] = order.selected_payment['local_name']
+
                                     time.sleep(2)
                                     step_counter.print_step("Verifying delivery and payment fees...")
                                     fee_success, fee_display = verify_order_fee(order)
@@ -1230,6 +1243,49 @@ def main_cz(email, phone):
     finally:
         driver.quit()
 
+def run_test_plan(order, emails, order_counter):
+    plan = generate_test_plan(order)
+    c = 1
+    email_switches = 0
+    local_counter = order_counter  # Continuation of brand-wide count
+   
+    for combo in plan:
+        # Check if we need to switch email mid-script
+        if local_counter > 0 and local_counter % 5 == 0:
+            email_switches += 1
+            if email_switches < len(emails):
+                order.user_email = emails[email_switches]
+                print(f"Switched to email: {order.user_email}")
+            else:
+                print("✗ Out of emails! Cannot place more orders.")
+                break
+
+        order.selected_delivery = combo['delivery']
+        order.selected_payment = combo['payment']
+        order.sku['price_class'] = combo['price_class']
+
+        print(f'COMBO {c}: {order.selected_delivery['local_name']} + {order.selected_payment['local_name']} + Price class {order.sku['price_class']}')
+        execute_single_order(order)
+        c += 1
+        local_counter += 1
+    
+    orders_made = c - 1  # Actual orders placed
+    # Return how many emails were used (0-indexed)
+    return orders_made, email_switches
+
+def main_cz_lvh(email, phone, emails=None, order_counter=0):
+    global driver, wait
+    
+    if emails is None:
+        emails = [email]  # Backward compatibility
+    
+    order = OrderContextCZ()
+    order.user_email = email
+    order.user_phone = phone
+    
+    orders_made, email_index = run_test_plan(order, emails, order_counter)
+    return orders_made, email_index
+
 if __name__ == "__main__":
-    main_cz()
+    main_cz_lvh()
 
