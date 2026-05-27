@@ -587,7 +587,7 @@ def navigate_to_cart_directly():
 
 def check_cart_contents(sku, expected_quantity=1):
     # Verify our item is in the basket
-    cart_items = driver.find_elements(By.ID, "basket-item-table")
+    cart_items = driver.find_elements(By.CLASS_NAME, "cart-row__meta")
     total_qty = 0
     found = False
     
@@ -595,8 +595,8 @@ def check_cart_contents(sku, expected_quantity=1):
         if str(sku) in cart_item.text:
             found = True
             # Get quantity directly in element counter
-            qty_input = cart_item.find_element(By.CSS_SELECTOR, 
-                "[data-entity='basket-item-quantity-field']")
+            qty_input = cart_item.find_element(By.XPATH, 
+                "./ancestor::div[contains(@class, 'cart-item')]//input[@data-entity='basket-item-quantity-field']")
             qty = int(qty_input.get_attribute('value'))
             total_qty += qty
             print(f"✓ Found SKU {sku}, quantity: {qty}")
@@ -611,7 +611,7 @@ def check_cart_contents(sku, expected_quantity=1):
 def get_total_price_basket(order):
     # Extract the total price from the Cart price block
     try:
-        price_text = driver.find_element(By.CLASS_NAME, 'cart-panel__price').text
+        price_text = driver.find_element(By.ID, 'total_price').text
         price = extract_price(price_text)
         if price is not None:
             order.summary['basket_price'] = price
