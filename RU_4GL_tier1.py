@@ -378,10 +378,6 @@ def choose_address(order):
     ] 
     }
     chosen_region = order.selected_region
-    # Can be a list (e.g. SDEK Courier, "'region': ['St. Petersburg', 'regions']")
-    if type(chosen_region) is list:
-        chosen_region = random.choice(chosen_region)
-        order.selected_region = chosen_region
     region_lib = shipping_addresses[chosen_region]
 
     address = random.choice(region_lib)
@@ -1120,7 +1116,7 @@ def generate_test_plan(order):
     cod_courier = next(p for p in all_payments if p['en_name'] == 'cash on delivery (courier)')
     couriers = [d for d in all_deliveries if 'courier' in d['en_name']]
     chosen_courier = random.choice(couriers)
-    chosen_region = chosen_courier['compatible_with']['region'] 
+    chosen_region = random.choice(chosen_courier['compatible_with']['region']) 
     plan.append({'region': chosen_region, 'delivery': chosen_courier, 'payment': cod_courier})
     used_payments.add('cash on delivery (courier)')
     
@@ -1128,11 +1124,11 @@ def generate_test_plan(order):
     cod_pickup = next(p for p in all_payments if p['en_name'] == 'cash on delivery')
     pickups = [d for d in all_deliveries if 'pickup' in d['en_name'] or 'shop pickup' in d['en_name']]
     chosen_pickup = random.choice(pickups)
-    chosen_region = chosen_pickup['compatible_with']['region'] 
+    chosen_region = random.choice(chosen_pickup['compatible_with']['region']) 
     plan.append({'region': chosen_region, 'delivery': chosen_pickup, 'payment': cod_pickup})
     used_payments.add('cash on delivery')
     
-    # 4. Remaining 4 universally-compatible payments + remaining 5 deliveries
+    # 4. Remaining 3 universally-compatible payments + remaining 4 deliveries
     remaining_payments = [p for p in all_payments if p['en_name'] not in used_payments]
     used_deliveries = {ems['en_name'], chosen_courier['en_name'], chosen_pickup['en_name']}
     remaining_deliveries = [d for d in all_deliveries if d['en_name'] not in used_deliveries]
@@ -1143,14 +1139,18 @@ def generate_test_plan(order):
     # Pair each remaining delivery with a unique payment
     for i, delivery in enumerate(remaining_deliveries):
         if i < len(remaining_payments):
-            chosen_region = delivery['compatible_with']['region']
+            chosen_region = random.choice(delivery['compatible_with']['region'])
             plan.append({'region': chosen_region,'delivery': delivery, 'payment': remaining_payments[i]})
+            used_deliveries.add(delivery['en_name'])
     
-    # Any leftover payments? Pair with already-used deliveries
-    for i in range(len(remaining_deliveries), len(remaining_payments)):
-        compatible_delivery = random.choice(all_deliveries)
-        chosen_region = compatible_delivery['compatible_with']['region']
-        plan.append({'region': chosen_region,'delivery': compatible_delivery, 'payment': remaining_payments[i]})
+    remaining_deliveries = [d for d in all_deliveries if d['en_name'] not in used_deliveries]
+    # Any leftover deliveries? Pair with already-used payments
+    if len(remaining_deliveries) > 0:
+        for delivery in remaining_deliveries: 
+            compatible_payment_name = random.choice(delivery['compatible_with']['payment'])
+            compatible_payment = next(p for p in all_payments if p['en_name'] == compatible_payment_name)
+            plan.append({'region': chosen_region,'delivery': delivery, 'payment': compatible_payment})
+            used_deliveries.add(delivery['en_name'])
     
     print(f'Generated test plan with {len(plan)} combos')
     for i, combo in enumerate(plan):
@@ -1332,7 +1332,6 @@ def run_test_plan(order, emails, order_counter):
         order.selected_delivery = combo['delivery']
         order.selected_payment = combo['payment']
         order.selected_region = combo['region']
-
 
         print(f'COMBO {c}: {order.selected_delivery['local_name']} + {order.selected_payment['local_name']}')
         execute_single_order(order)
