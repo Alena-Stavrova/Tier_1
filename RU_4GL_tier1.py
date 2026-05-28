@@ -1155,7 +1155,6 @@ def generate_test_plan(order):
     print(f'Generated test plan with {len(plan)} combos')
     for i, combo in enumerate(plan):
         print(f"  {i+1}. {combo['delivery']['en_name']} + {combo['payment']['en_name']} + {combo['region']}")
-    print(plan)
     return plan
 
 
