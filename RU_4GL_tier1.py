@@ -378,6 +378,10 @@ def choose_address(order):
     ] 
     }
     chosen_region = order.selected_region
+    # Can be a list (e.g. SDEK Courier, "'region': ['St. Petersburg', 'regions']")
+    if type(chosen_region) is list:
+        chosen_region = random.choice(chosen_region)
+        order.selected_region = chosen_region
     region_lib = shipping_addresses[chosen_region]
 
     address = random.choice(region_lib)
@@ -1097,56 +1101,61 @@ def get_order_number():
         return False
     
 def generate_test_plan(order):
-    third_party_deliveries = [
-        d for d in order.delivery_options
-        if d.get('is_third_party', False)
-    ]
-
-    # Just 1 payment, compatible with everything
-    third_party_payments = [
-        p for p in order.payment_options
-        if p.get('is_third_party', False)
-    ]
+    all_deliveries = order.delivery_options
+    all_payments = order.payment_options
     
     plan = []
-    used_deliveries = set()  # Track deliveries already tested in any region
-
-    delivery = random.choice(third_party_deliveries)
-    # Expect only one 3rd-party payment (банковская карта онлайн)
-    if len(third_party_payments) > 1:
-        print("Uh oh, more than 1 third-party payments, need to update test plan generation")
-    else:
-        # If only 1 3rd-party payment found (as expected), pair it with any 3rd-party delivery
-        region = random.choice(delivery.get('compatible_with', {}).get('region', []))
-        plan.append({
-            'region': region,
-            'delivery': delivery,
-            'payment': third_party_payments[0]
-        })
-        used_deliveries.add(delivery['en_name'])
+    used_deliveries = set()
+    used_payments = set()
     
-    # Pair remaining 3rd-party deliveries with any compatible payments
-    for delivery in third_party_deliveries:
-        if delivery['en_name'] not in used_deliveries:
-            compatible_payments = delivery.get('compatible_with', {}).get('payment', [])
-            if compatible_payments:
-                payment_name = random.choice(compatible_payments) # Returns a string
-                # Find the full payment dictionary
-                payment = next(
-                    p for p in order.payment_options 
-                    if p['en_name'] == payment_name
-                )
-                region = random.choice(delivery.get('compatible_with', {}).get('region', []))
-                plan.append({
-                    'region': region,
-                    'delivery': delivery,
-                    'payment': payment
-                })
-                used_deliveries.add(delivery['en_name'])
-            else:
-                print(f"✗ Warning: No compatible payments for {delivery['en_name']}")
+    # 1. Handle the constrained pair first: EMS + наложенный платеж
+    ems = next(d for d in all_deliveries if d['en_name'] == 'ems')
+    ems_cod = next(p for p in all_payments if p['en_name'] == 'cash on delivery (ems)')
     
-    print(f'\nGenerated test plan with {len(plan)} combo(s)')
+    plan.append({'region': 'regions', 'delivery': ems, 'payment': ems_cod})
+    used_deliveries.add('ems')
+    used_payments.add('cash on delivery (ems)')
+    
+    # 2. "Наличными курьеру" — only couriers. Pick a random courier.
+    cod_courier = next(p for p in all_payments if p['en_name'] == 'cash on delivery (courier)')
+    couriers = [d for d in all_deliveries if 'courier' in d['en_name']]
+    chosen_courier = random.choice(couriers)
+    chosen_region = chosen_courier['compatible_with']['region'] 
+    plan.append({'region': chosen_region, 'delivery': chosen_courier, 'payment': cod_courier})
+    used_payments.add('cash on delivery (courier)')
+    
+    # 3. "Оплата при получении" — only pickups. Pick a random pickup.
+    cod_pickup = next(p for p in all_payments if p['en_name'] == 'cash on delivery')
+    pickups = [d for d in all_deliveries if 'pickup' in d['en_name'] or 'shop pickup' in d['en_name']]
+    chosen_pickup = random.choice(pickups)
+    chosen_region = chosen_pickup['compatible_with']['region'] 
+    plan.append({'region': chosen_region, 'delivery': chosen_pickup, 'payment': cod_pickup})
+    used_payments.add('cash on delivery')
+    
+    # 4. Remaining 4 universally-compatible payments + remaining 5 deliveries
+    remaining_payments = [p for p in all_payments if p['en_name'] not in used_payments]
+    used_deliveries = {ems['en_name'], chosen_courier['en_name'], chosen_pickup['en_name']}
+    remaining_deliveries = [d for d in all_deliveries if d['en_name'] not in used_deliveries]
+    
+    # Shuffle for variety
+    random.shuffle(remaining_payments)
+    
+    # Pair each remaining delivery with a unique payment
+    for i, delivery in enumerate(remaining_deliveries):
+        if i < len(remaining_payments):
+            chosen_region = delivery['compatible_with']['region']
+            plan.append({'region': chosen_region,'delivery': delivery, 'payment': remaining_payments[i]})
+    
+    # Any leftover payments? Pair with already-used deliveries
+    for i in range(len(remaining_deliveries), len(remaining_payments)):
+        compatible_delivery = random.choice(all_deliveries)
+        chosen_region = compatible_delivery['compatible_with']['region']
+        plan.append({'region': chosen_region,'delivery': compatible_delivery, 'payment': remaining_payments[i]})
+    
+    print(f'Generated test plan with {len(plan)} combos')
+    for i, combo in enumerate(plan):
+        print(f"  {i+1}. {combo['delivery']['en_name']} + {combo['payment']['en_name']} + {combo['region']}")
+    print(plan)
     return plan
 
 
