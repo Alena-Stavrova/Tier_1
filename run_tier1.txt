@@ -1,0 +1,6 @@
+@echo off
+echo Starting Tier 1 tests...
+python Tier1_script_runner.py
+echo.
+echo Tests finished. Press any key to close.
+pause
