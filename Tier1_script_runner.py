@@ -6,17 +6,17 @@ import random
 
 script_modules = {
     'ru': {
-        'RU_4GL': ru_4gl,
+        'RU_4GL': ru_4gl
+    },
+    'levenhuk': {
+        'CZ_LVH': cz_lvh
     }
-    #'levenhuk': {
-        #'CZ_LVH': cz_lvh,
-    #}
 }
 
 # Max orders per brand (with buffer for IT's variability)
 num_orders_per_brand = {
-    'ru': 6         # RU 4GL-3
-    #'levenhuk': 3     # CZ-3
+    'ru': 6,         # RU 4GL-3
+    'levenhuk': 3     # CZ-3
 }
 
 # Collect all emails upfront (2 per brand since max is 8, and 8/5 > 1)
