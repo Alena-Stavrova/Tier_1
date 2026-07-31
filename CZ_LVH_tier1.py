@@ -5,6 +5,7 @@ from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support.ui import Select
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import ElementClickInterceptedException, StaleElementReferenceException
 import time
 import re
 import random
@@ -61,7 +62,6 @@ class ParentContext:
     def __init__(self):
         self.user_email = None
         self.user_phone = None
-        self.currency = None
 
         self.sku = {
             'selected': None,
@@ -73,6 +73,10 @@ class ParentContext:
         self.selected_delivery = None 
 
         self.selected_payment = None
+
+        self.currency = None
+        self.displays_cents = True
+        self.free_shipping_phrase = None
 
         # Results summary
         self.summary = {
@@ -155,12 +159,21 @@ class ParentContext:
     def update_summary(self, **kwargs):
         self.summary.update(kwargs)
 
+    def format_fee_display(self, amount, display_text):
+            if display_text and 'TBD' in str(display_text).upper():
+                self.summary['order_fee'] = display_text
+                self.summary['order_fee_amount'] = None
+            elif self.free_shipping_phrase and display_text == self.free_shipping_phrase:
+                self.summary['order_fee'] = f"0 {self.currency}"
+                self.summary['order_fee_amount'] = 0
+            else:
+                self.summary['order_fee'] = f"{amount} {self.currency}" if amount is not None else display_text
+                self.summary['order_fee_amount'] = amount
+
 class OrderContextCZ(ParentContext):
     def __init__(self):
         super().__init__()
-        self.currency = 'Kč'
-        self.display_cents = False
-
+        
         self.sku_lists = {
             'price_classes': {
                 0: [79086, 74322, 81932, 72097, 83820], # Under 3000 CZK (109 CZK shipping)
@@ -185,6 +198,11 @@ class OrderContextCZ(ParentContext):
                 'local_name': 'doručení kurýrem',
                 'en_name': 'courier',
                 'opt_id': 'ID_SHIPPING_METHOD_ID_5'
+                },
+            {
+                'local_name': 'expresní doručení',
+                'en_name': 'express courier',
+                'opt_id': 'ID_SHIPPING_METHOD_ID_28'
                 }
             ]
           
@@ -205,7 +223,7 @@ class OrderContextCZ(ParentContext):
                 'en_name': 'credit card',
                 'opt_id': "ID_PAY_SYSTEM_ID_52",
                 'compatible_with': {
-                    'delivery':['vyzvednutí', 'ppl parcel box', 'doručení kurýrem'],
+                    'delivery':['vyzvednutí', 'ppl parcel box', 'doručení kurýrem', 'expresní doručení'],
                     'price_class': [0, 1]
                 }
             },
@@ -214,11 +232,15 @@ class OrderContextCZ(ParentContext):
                 'en_name': 'paypal',
                 'opt_id': 'ID_PAY_SYSTEM_ID_6',
                 'compatible_with': {
-                    'delivery':['vyzvednutí', 'ppl parcel box', 'doručení kurýrem'],
+                    'delivery':['vyzvednutí', 'ppl parcel box', 'doručení kurýrem', 'expresní doručení'],
                     'price_class': [0, 1]
                 }
             }
         ]
+
+        self.displays_cents = False
+        self.currency = 'Kč'
+        self.free_shipping_phrase = 'Doprava zdarma'
         
         self.fees = {
             'shipping': {
@@ -250,7 +272,8 @@ class OrderContextCZ(ParentContext):
             }
         }
     }
-        
+
+    
     def get_expected_shipping_fee(self):
         if not self.selected_delivery:
             return None, None
@@ -258,11 +281,16 @@ class OrderContextCZ(ParentContext):
         delivery_name = self.selected_delivery['en_name']
         price_class = self.sku['price_class']  
 
+        # Express delivery - 3rd party API, nothing to verify against
+        if delivery_name == 'express courier':
+            return None, None
+
         # Shop pickup
         if delivery_name == 'shop pickup':
             fee_data = self.fees['shipping'][delivery_name]['any']
+            return fee_data['display'], fee_data['amount']
         
-        # Courier and PPL
+        # Standard courier and PPL
         else:
             if price_class == 0:  
                 tier = 'under_3000'
@@ -270,7 +298,7 @@ class OrderContextCZ(ParentContext):
                 tier = 'over_3000'
 
             fee_data = self.fees['shipping'][delivery_name][tier]
-        return fee_data['display'], fee_data['amount']
+            return fee_data['display'], fee_data['amount']
 
     def get_expected_payment_fee(self):
         # No payment fees
@@ -278,25 +306,31 @@ class OrderContextCZ(ParentContext):
 
     def get_expected_total_fee(self):
         ship_display, ship_amount = self.get_expected_shipping_fee()
+
+        if ship_display is None and ship_amount is None:
+             return None, None  # Express/third-party — no reference
+        
         pay_display, pay_amount = self.get_expected_payment_fee()
         
-        # Calculate total amount (handle None as 0)
-        ship_amount = ship_amount if ship_amount is not None else 0
-        pay_amount = pay_amount if pay_amount is not None else 0
+        ship_amount = ship_amount or 0
+        pay_amount = pay_amount or 0
         total_amount = ship_amount + pay_amount
         
-        # Format display string
         if total_amount == 0:
-            display = 'Doprava zdarma'
+            display = self.free_shipping_phrase
         else:
             display = f'{total_amount} {self.currency}'
-        
+            
         return display, total_amount
 
 def determine_price_class(payment_option):
     price_class_list = payment_option['compatible_with']['price_class']
     price_class = random.choice(price_class_list)
     return price_class
+
+def get_payments_for_delivery(order, delivery_en_name):
+    delivery_option = next(d for d in order.delivery_options if d['en_name'] == delivery_en_name)
+    return [p for p in order.payment_options if delivery_option['local_name'] in p['compatible_with'].get('delivery', [])]
     
 # Choose random sku, return a string and int price class
 def choose_sku(order):
@@ -340,7 +374,7 @@ def choose_address():
         'postal_code': '530 03'
     }
 ]
-    address = shipping_addresses[random.randint(0,2)] 
+    address = random.choice(shipping_addresses)
     return(address) #returns a dictionary
 
 def extract_price(price_text):
@@ -607,6 +641,111 @@ def proceed_to_checkout():
         take_screenshot("checkout_error")
         return False
 
+def _wait_for_payment_options(order):
+    # Helper function that verifies all the payment buttons are interactable after express button appeared
+    
+    # First, wait for the express delivery option to appear 
+    # This is the last element to load via third-party API
+    try:
+        WebDriverWait(driver, 15).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, 
+                "label[for='ID_SHIPPING_METHOD_ID_28']"))
+        )
+        print("Express delivery option loaded")
+        time.sleep(1)  # Extra buffer for the page to finish rebuilding after express arrives
+    except:
+        print("No express delivery option found (or already loaded)")
+
+    compatible_options = order.get_available_payment_options()
+    
+    if not compatible_options:
+        print("✗ No compatible payment options to wait for")
+        return True
+    
+    expected_ids = [opt['opt_id'] for opt in compatible_options]
+    print(f"Waiting for {len(expected_ids)} payment options to be clickable...")
+
+    for opt_id in expected_ids:
+        try:
+            WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, f"label[for='{opt_id}']"))
+            )
+        except:
+            print(f"✗ Payment option {opt_id} did not become clickable")
+            return False
+        
+    time.sleep(0.3)  # Small buffer after all are ready
+    print("All payment options clickable")
+    return True 
+
+def get_checked_option_id(id_prefix):
+    # Ground-truth read of which radio input is actually checked in the DOM right now
+    # Returns the id string, or None if none are checked
+
+    script = """
+        var prefix = arguments[0];
+        var inputs = document.querySelectorAll('input[id^="' + prefix + '"]');
+        for (var i = 0; i < inputs.length; i++) {
+            if (inputs[i].checked) { return inputs[i].id; }
+        }
+        return null;
+    """
+    try:
+        return driver.execute_script(script, id_prefix)
+    except Exception:
+        return None
+
+def force_click_option(opt_id):
+    # Clicking the label fires the site's own click handlers, force the underlying input's checked state + change event
+    # Needed in case the label click alone gets swallowed by an in-progress re-render
+
+    try:
+        driver.execute_script(f"""
+            var label = document.querySelector('label[for="{opt_id}"]');
+            if (label) {{ label.click(); }}
+        """)
+    except Exception:
+        pass
+    try:
+        driver.execute_script(f"""
+            var input = document.getElementById('{opt_id}');
+            if (input && !input.checked) {{
+                input.checked = true;
+                input.dispatchEvent(new Event('change', {{bubbles: true}}));
+                input.dispatchEvent(new Event('click', {{bubbles: true}}));
+            }}
+        """)
+    except Exception:
+        pass
+
+def wait_until_selection_stable(id_prefix, expected_id, stable_duration=1.0, timeout=12, poll_interval=0.15):
+    # Poll the DOM until `expected_id` has been continuously checked for `stable_duration` seconds straight
+    # Any time the checked option drifts away from expected_id, it re-clicks expected_id and restarts the stability clock.
+    # Only moves on once things have genuinely settled, returns True if stable in time, False if it never settled (timeout).
+    
+    start = time.time()
+    stable_since = None
+
+    while time.time() - start < timeout:
+        current = get_checked_option_id(id_prefix)
+
+        if current == expected_id:
+            if stable_since is None:
+                stable_since = time.time()
+            elif time.time() - stable_since >= stable_duration:
+                return True
+        else:
+            if stable_since is not None:
+                print(f"  ↳ Selection drifted from {expected_id} (now: {current}), re-clicking...")
+            stable_since = None
+            force_click_option(expected_id)
+
+        time.sleep(poll_interval)
+
+    final = get_checked_option_id(id_prefix)
+    print(f"✗ '{expected_id}' never stabilized as checked (last seen: {final})")
+    return False
+
 def select_ppl(order):
 # Separate function for PPL delivery, used in select_delivery_option()
     try:
@@ -614,16 +753,23 @@ def select_ppl(order):
         ppl_option = order.get_delivery_option_by_name('ppl parcel box')
         if not ppl_option:
             print("✗ PPL parcel box option not found")
-            return False, 'ppl parcel box'
+            return False
         
         ppl_element = WebDriverWait(driver, 5).until(
             EC.element_to_be_clickable((By.CSS_SELECTOR, 
                 f"label[for='{ppl_option['opt_id']}']"))
         )
         ppl_element.click()
+        stable = wait_until_selection_stable("ID_SHIPPING_METHOD_ID_", ppl_option['opt_id'])
+        if not stable:
+            print("✗ Could not get PPL radio to stick")
+            return False
         print("PPL delivery selected")
-        time.sleep(2)
 
+        # TODO - do we need this??
+        if not _wait_for_payment_options(order):
+            print("✗ Payment options not fully ready, but continuing...")
+        
         print("Selecting PPL pickup point...")
         WebDriverWait(driver, 10).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, ".result__item"))
@@ -633,7 +779,7 @@ def select_ppl(order):
 
         if not pickup_buttons:
             print("✗ No PPL pickup points found")
-            return False, 'ppl parcel box'
+            return False
         
         # Choose a random pickup point
         chosen_button = random.choice(pickup_buttons)
@@ -645,7 +791,17 @@ def select_ppl(order):
         except:
             print("Selecting random pickup point")
 
-        chosen_button.click()
+        # Scroll and click with JS fallback
+        driver.execute_script(
+            "arguments[0].scrollIntoView({block: 'center', behavior: 'instant'});", 
+            chosen_button
+            )
+        time.sleep(0.3)
+        try:
+            chosen_button.click()
+        except:
+            driver.execute_script("arguments[0].click();", chosen_button)
+
         print("Pickup point clicked, waiting for details to load...")
         time.sleep(2)
 
@@ -658,12 +814,12 @@ def select_ppl(order):
         time.sleep(2)
 
         print("✓ PPL pickup point selected successfully")
-        return True, "ppl parcel box"
+        return True
     
     except Exception as e:
         print(f"✗ Failed to select PPL pickup point: {str(e)}")
         take_screenshot("ppl_pickup_error")
-        return False, 'ppl parcel box'
+        return False
     
 def click_delivery_option(order):
     try:
@@ -682,25 +838,63 @@ def click_delivery_option(order):
                 return select_ppl(order)
             else:
                 try:
-                    # Find and click the delivery option label
-                    delivery_label = wait.until(
-                        EC.element_to_be_clickable((By.CSS_SELECTOR, 
-                            f"label[for='{selected_id}']"))
-                    )
-                    print("Found delivery label, attempting to click...")
+                    try:
+                        # Find and click the delivery option label
+                        delivery_label = wait.until(
+                            EC.element_to_be_clickable((By.CSS_SELECTOR, 
+                                f"label[for='{selected_id}']"))
+                        )
+                        print("Found delivery label, attempting to click...")
                 
-                    # Scroll to the label
-                    driver.execute_script(
-                        "arguments[0].scrollIntoView({block: 'center', behavior: 'smooth'});", 
-                        delivery_label
-                    )
-                    time.sleep(0.5)
-                
-                    # Click the label
-                    delivery_label.click()
+                        # Scroll to the label
+                        driver.execute_script(
+                            "arguments[0].scrollIntoView({block: 'center', behavior: 'smooth'});", 
+                            delivery_label
+                        )
+                        time.sleep(0.5)
+                        delivery_label.click()
+
+                    except:
+                        # Fallback: click the radio input directly via JavaScript
+                        print("Label not clickable, using JS click on radio input...")
+                        try:
+                            WebDriverWait(driver, 10).until(
+                                EC.presence_of_element_located((By.CSS_SELECTOR, f"#{selected_id}"))
+                            )
+                            time.sleep(0.5)
+                        except:
+                            print(f"✗ Radio input #{selected_id} never appeared")
+                            return False, selected_name
+                    
+                        driver.execute_script(
+                            f"document.querySelector('#{selected_id}').click();"
+                            )
+                        # Also trigger change event in case the page listens for it
+                        driver.execute_script(
+                            f"document.querySelector('#{selected_id}').dispatchEvent(new Event('change', {{bubbles: true}}));"
+                            )
                     time.sleep(1)
+                    if not _wait_for_payment_options(order):
+                        print("✗ Payment options not fully ready, but continuing...")
+
+                    # Confirm the click actually stuck (page may re-render after express loads)
+                    stable = wait_until_selection_stable("ID_SHIPPING_METHOD_ID_", selected_id)
+                    if not stable:
+                        print(f"✗ Could not get {selected_name} to stick")
+                    
+                    # Ground truth: read what's actually checked, don't just trust the intended click
+                    actual_id = get_checked_option_id("ID_SHIPPING_METHOD_ID_")
+                    actual_option = next(
+                        (opt for opt in order.delivery_options if opt['opt_id'] == actual_id),
+                        selected
+                    )
+                    actual_name = actual_option['local_name']
+                    order.selected_delivery = actual_option # TODO - do we need this?
                 
-                    print(f"✓ Option clicked: {selected_name}")
+                    if actual_id == selected_id:
+                        print(f"Confirmed delivery selection: {actual_name}")
+                    else:
+                        print(f"✗ Intended {selected_name} but DOM shows {actual_name} - reporting actual state")
                     return True
                 
                 except Exception as e:
@@ -750,12 +944,36 @@ def click_payment_option(order):
                 payment_label.click()
                 time.sleep(1)
                 
-                print(f"✓ Successfully selected {selected_name}")
-                return True
-                
+            except (ElementClickInterceptedException, StaleElementReferenceException) as e:
+                print(f"Click intercepted/stale ({type(e).__name__}), falling back to JS click...")
+                force_click_option(selected_id)
             except Exception as e:
-                print(f"✗ Failed to click payment option {selected_name}: {str(e)}")
-                return False
+                print(f"Normal click failed ({str(e)}), attempting JS click fallback...")
+                force_click_option(selected_id)
+
+            # Confirm the click actually stuck; the express-delivery re-render can
+            # silently snap the radio back to the default right after we click it
+            stable = wait_until_selection_stable("ID_PAY_SYSTEM_ID_", selected_id)
+            if not stable:
+                print(f"✗ Could not get {selected_name} to stick")
+                        
+            # Ground truth: read what's actually checked in the DOM right now,
+            # instead of trusting what we intended to click
+            actual_id = get_checked_option_id("ID_PAY_SYSTEM_ID_")
+            actual_option = next(
+                (opt for opt in order.payment_options if opt['opt_id'] == actual_id),
+                selected
+            )
+            actual_name = actual_option['local_name']
+            order.selected_payment = actual_option # TODO - do we need this?
+
+            if actual_id == selected_id:
+                print(f"✓ Confirmed payment selection: {actual_name}")
+            else:
+                print(f"✗ Intended {selected_name} but DOM shows {actual_name} - reporting actual state")
+             
+            return True
+            
         else:
             print(f"Using default payment option ({default_name}), no action needed")
             return True
@@ -828,6 +1046,7 @@ def fill_order_form(user_email, test_phone):
 
         # Select country in dropdown menu using Select object
         try:
+            close_cookie_popup()
             print(f"Selecting country: {country_name}")
 
             # Find the actual select element (visible, interactable)
@@ -897,18 +1116,36 @@ def fill_order_form(user_email, test_phone):
         
         # Address field
         try:
-            address_field = WebDriverWait(driver, 5).until(
+            # Wait for page to stabilize after city selection (cart may be reloading)
+            try:
+                WebDriverWait(driver, 15).until(
+                    EC.invisibility_of_element_located((By.CSS_SELECTOR, "#CART-SIDEBAR-TARGET.loader"))
+                )
+                print("Loader disappeared")
+                time.sleep(0.5)
+            except:
+                print("Loader not found or already gone")
+
+            # Wait for delivery section to stabilize (express option may be loading)
+            WebDriverWait(driver, 10).until(
+                EC.presence_of_element_located((By.ID, "bx-delivery-method"))
+            )
+            time.sleep(0.5)
+                
+            address_field = WebDriverWait(driver, 10).until(
                 EC.element_to_be_clickable((By.ID, "ADDRESS_SHIP"))
             )
             
-            # Click to ensure focus
-            address_field.click()
-            time.sleep(0.5)
-            
-            address_field.clear()
-            address_field.send_keys(ship_to['address'])
+            # Use JS to focus and set value (bypasses overlay issues)
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", address_field)
+            time.sleep(0.3)
+            driver.execute_script("arguments[0].focus();", address_field)
+            driver.execute_script("arguments[0].value = '';", address_field)
+            driver.execute_script("arguments[0].value = arguments[1];", address_field, ship_to['address'])
+            driver.execute_script("arguments[0].dispatchEvent(new Event('input', {bubbles: true}));", address_field)
+            driver.execute_script("arguments[0].dispatchEvent(new Event('change', {bubbles: true}));", address_field)
             print("Address field filled")
-            
+                        
             # Press Tab to move to next field
             address_field.send_keys(Keys.TAB)
             time.sleep(0.5)
@@ -923,14 +1160,29 @@ def fill_order_form(user_email, test_phone):
             postal_code_field = WebDriverWait(driver, 5).until(
                 EC.element_to_be_clickable((By.ID, "ZIP_SHIP"))
             )
-            
-            # Click to ensure focus
-            postal_code_field.click()
-            time.sleep(0.5)
-            
-            postal_code_field.clear()
-            postal_code_field.send_keys(ship_to['postal_code'])
+
+            # Use JS to focus and set value (bypasses overlay issues)
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", postal_code_field)
+            time.sleep(0.3)
+            driver.execute_script("arguments[0].focus();", postal_code_field)
+            driver.execute_script("arguments[0].value = '';", postal_code_field)
+            driver.execute_script("arguments[0].value = arguments[1];", postal_code_field, ship_to['postal_code'])
+            driver.execute_script("arguments[0].dispatchEvent(new Event('input', {bubbles: true}));", postal_code_field)
+            driver.execute_script("arguments[0].dispatchEvent(new Event('change', {bubbles: true}));", postal_code_field)
             print("Postal code field filled")
+
+            # Wait for delivery/payment section to fully re-render after address is complete
+            # (Express delivery option and updated payment list may be loading via API)
+            print("Waiting for delivery options to stabilize...")
+            WebDriverWait(driver, 15).until(
+                EC.presence_of_element_located((By.ID, "bx-delivery-method"))
+            )
+            # Wait for at least one payment label to be visible (section fully rebuilt)
+            WebDriverWait(driver, 10).until(
+                EC.visibility_of_element_located((By.CSS_SELECTOR, "#bx-payment-method label"))
+            )
+            time.sleep(0.5)
+            print("Delivery/payment section stabilized")
             
         except Exception as e:
             print(f"✗ Error with postal code field: {str(e)}")
@@ -970,22 +1222,43 @@ def verify_order_fee(order):
         fee_element = wait.until(
             EC.presence_of_element_located((By.ID, "bx-cost-shipping"))
         )    
-        actual_fee_text = fee_element.text
-        print(f"Actual fee on page: '{actual_fee_text}'")
+        actual_fee = fee_element.text
+        print(f"Actual fee on page: '{actual_fee}'")
 
         expected_display, expected_amount = order.get_expected_total_fee()
-        order.summary['expected_fee'] = expected_display
-
-        if actual_fee_text == 'Doprava zdarma':
-            actual_fee = 0
-        else:
-            actual_fee = int(extract_price(actual_fee_text))
+        # Only write it in the summary if not None
+        if not (expected_display is None and expected_amount is None):
+            order.summary['expected_fee'] = expected_display
         
-        if actual_fee == expected_amount:
-            print(f"✓ Fee verified: {actual_fee} {order.currency}")
+        # Handle non-verifiable fees (express/third-party)
+        if expected_display is None and expected_amount is None:
+            # No reference – just capture and log
+            if actual_fee == order.free_shipping_phrase:
+                actual_amount = 0
+            else:
+                actual_amount = extract_price(actual_fee)  # None if not a number
+            order.format_fee_display(actual_amount, actual_fee)
+            print(f"Fee (non-verifiable): {actual_fee}")
             return True, actual_fee
+        
+        # Compare display strings
+        if actual_fee == expected_display:
+            print(f"✓ Fee verified: {actual_fee}")
+            if actual_fee == order.free_shipping_phrase:
+                actual_amount = 0
+            else:
+                actual_amount = extract_price(actual_fee)
+            order.format_fee_display(actual_amount, actual_fee)
+            return True, actual_fee
+        
         else:
-            print(f"✗ Fee mismatch: Expected '{expected_amount} {order.currency}', got '{actual_fee} {order.currency}'")
+            print(f"✗ Fee mismatch: Expected '{expected_display}', got '{actual_fee}'")
+            # Store actual fee even on mismatch
+            if actual_fee == order.free_shipping_phrase:
+                actual_amount = 0
+            else:
+                actual_amount = extract_price(actual_fee)
+            order.format_fee_display(actual_amount, actual_fee)
             return False, actual_fee
                 
     except Exception as e:
@@ -1041,8 +1314,30 @@ def get_order_number():
         take_screenshot("final_order_error")
         return False
 
+def reverify_before_submit(order, attr_name, options_list, id_prefix):
+    # Final ground-truth check right before submitting — a late re-render (e.g. during
+    # fee verification) can silently reset a selection after we already confirmed it
+    intended = getattr(order, attr_name)
+    if intended is None:
+        return
+
+    current_id = get_checked_option_id(id_prefix)
+    if current_id and current_id != intended['opt_id']:
+        print(f"⚠ {attr_name} drifted before submission: was {intended['local_name']}, attempting to re-select it...")
+        force_click_option(intended['opt_id'])
+        wait_until_selection_stable(id_prefix, intended['opt_id'])
+
+        current_id = get_checked_option_id(id_prefix)
+        final_option = next((o for o in options_list if o['opt_id'] == current_id), intended)
+        setattr(order, attr_name, final_option)
+
+        if current_id == intended['opt_id']:
+            print(f"✓ Re-selected {intended['local_name']} successfully")
+        else:
+            print(f"✗ Could not restore {intended['local_name']}; proceeding with {final_option['local_name']}")
+
 def generate_test_plan(order):
-    # 3 orders to cover 3 deliveries and 3 payments, test both price classes
+    # 4 orders to cover 4 deliveries and 3 payments, test both price classes
     
     # Get all options, not just third-party
     all_deliveries = order.delivery_options
@@ -1050,13 +1345,15 @@ def generate_test_plan(order):
     
     plan = []
     
-    # Strategy: pair each delivery with a unique payment, 3 orders total.
+    # Strategy: pair each delivery with a unique payment for 3 orders, then pick a random payment for the 4th order.
     # Shop pickup is always free → either price class works.
+    # Express delivery calculates independently → either price class works.
     # Courier and pickup points have 3000 Kč threshold → test one above, one below.
     
     # Order 1: Shop pickup (always free) + payment 1, any price class
     # Order 2: Courier + payment 2, pick random price class and remove it from the list
     # Order 3: Pickup points + payment 3, the remaining price class from Option 2
+    # Order 4: Express delivery + a random payment (out of 2 available), any price class
     
     # Shuffle payments for variety
     shuffled_payments = random.sample(all_payments, len(all_payments))
@@ -1085,6 +1382,15 @@ def generate_test_plan(order):
         'delivery': pickup_points,
         'payment': shuffled_payments[2],
         'price_class': price_classes[1]  # The other one
+    })
+
+    # Express courier - 3rd party calculation, any price class
+    express_courier = next(d for d in all_deliveries if d['en_name'] == 'express courier')
+    express_payments = get_payments_for_delivery(order, 'express courier')
+    plan.append({
+        'delivery': express_courier,
+        'payment': random.choice(express_payments),
+        'price_class': random.choice([0, 1])
     })
     
     print(f'Generated test plan with {len(plan)} combo(s)')
@@ -1188,6 +1494,13 @@ def execute_single_order(order):
                                         order.summary['order_fee'] = fee_display
                                             
                                     step_counter.print_step("Placing order")
+
+                                    reverify_before_submit(order, 'selected_payment', order.payment_options, "ID_PAY_SYSTEM_ID_")
+                                    reverify_before_submit(order, 'selected_delivery', order.delivery_options, "ID_SHIPPING_METHOD_ID_")
+
+                                    order.summary['payment_option'] = order.selected_payment['local_name']
+                                    order.summary['delivery_option'] = order.selected_delivery['local_name']
+
                                     order_result = place_order()
 
                                     if order_result:
@@ -1228,10 +1541,13 @@ def execute_single_order(order):
 
         # Shipping fees match check
         if fee_success:
-            print(f"Order fee (shipping + payment): ✓ As expected, {order.summary['order_fee']} {order.currency}")
+            if order.summary.get('expected_fee'):
+                print(f"Order fee (shipping + payment): ✓ As expected, {order.summary['order_fee']}")
+            else:
+                print(f"Order fee (shipping + payment): {order.summary['order_fee']} (not verified against reference)")
         else:
-            print(f"✗ Shipping fees don't match: expected {order.summary['expected_fee']}, got {order.summary['order_fee']}")
-        
+            print(f"✗ Shipping fees don't match: expected {order.summary.get('expected_fee', 'N/A')}, got {order.summary['order_fee']}")
+                
         print("----------END----------")
         time.sleep(10)
         
