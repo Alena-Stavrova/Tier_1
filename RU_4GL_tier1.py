@@ -179,7 +179,7 @@ class OrderContextRU(ParentContext):
                 'is_default': True,
                 'compatible_with': {
                     'region': ['St. Petersburg'],
-                    'payment': ['credit card', 'bank transfer', 'yandex split']
+                    'payment': ['credit card', 'bank transfer', 'cash on delivery', 'yandex split']
                 }
                 # Академическая - только предоплаченные заказы!
                 },
@@ -220,7 +220,7 @@ class OrderContextRU(ParentContext):
                 'opt_id': 'ID_SHIPPING_METHOD_ID_5',
                 'compatible_with': {
                     'region': ['Moscow'],
-                    'payment': ['credit card', 'bank transfer', 'yandex split']
+                    'payment': ['credit card', 'cash on delivery', 'bank transfer', 'yandex split']
                 }
                 # Лубянка - только предоплаченные заказы!
             },
@@ -1149,6 +1149,7 @@ def generate_test_plan(order):
         for delivery in remaining_deliveries: 
             compatible_payment_name = random.choice(delivery['compatible_with']['payment'])
             compatible_payment = next(p for p in all_payments if p['en_name'] == compatible_payment_name)
+            chosen_region = random.choice(delivery['compatible_with']['region'])
             plan.append({'region': chosen_region,'delivery': delivery, 'payment': compatible_payment})
             used_deliveries.add(delivery['en_name'])
     
