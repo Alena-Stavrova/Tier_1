@@ -662,9 +662,9 @@ def _select_pickup_location(order):
     try:
         # Wait for the pickup points container to appear
         WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.CLASS_NAME, "pickup-points"))
-        )
-        time.sleep(0.5)
+            EC.presence_of_all_elements_located((By.CSS_SELECTOR, ".pickup-points .tile-radio"))
+            )
+        time.sleep(0.5)  # small buffer for the list to finish fully rendering
         
         # Get all pickup point items (tile-radio divs)
         all_items = driver.find_elements(By.CSS_SELECTOR, ".pickup-points .tile-radio")
@@ -1240,13 +1240,11 @@ def execute_single_order(order):
                                 if fill_form_success:
                                     step_counter.print_step("Clicking delivery option")
                                     delivery_success = click_delivery_option(order)
-                                    if delivery_success:
-                                        order.summary['delivery_option'] = order.selected_delivery['local_name']
+                                    order.summary['delivery_option'] = order.selected_delivery['local_name'] if delivery_success else f"FAILED ({order.selected_delivery['local_name']})"
 
                                     step_counter.print_step("Clicking payment option")
                                     payment_success = click_payment_option(order)
-                                    if payment_success:
-                                        order.summary['payment_option'] = order.selected_payment['local_name']                                   
+                                    order.summary['payment_option'] = order.selected_payment['local_name'] if payment_success else f"FAILED ({order.selected_payment['local_name']})"                                
                                   
                                     time.sleep(2)
                                     step_counter.print_step("Verifying delivery and payment fees...")
