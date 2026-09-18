@@ -13,6 +13,12 @@ script_modules = {
     }
 }
 
+script_modules = {
+    'ru': {
+        'RU_4GL': ru_4gl
+    }
+}
+
 # Max orders per brand (with buffer for IT's variability)
 num_orders_per_brand = {
     'ru': 6,         # RU 4GL-3
